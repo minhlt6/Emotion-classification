@@ -9,7 +9,7 @@ from skimage.feature import hog
 # --- 1. CẤU HÌNH (BẮT BUỘC KHỚP VỚI LÚC TRAIN) ---
 IMAGE_SIZE = (64, 64)
 HOG_ORIENTATIONS = 9
-HOG_PIXELS_PER_CELL = (4, 4)
+HOG_PIXELS_PER_CELL = (8, 8)
 HOG_CELLS_PER_BLOCK = (2, 2)
 HOG_BLOCK_NORM = 'L2'
 
@@ -87,4 +87,5 @@ if model and scaler:
             except:
                 result_name = str(pred_idx)
                 
+
             st.header(f"Kết quả: {result_name}")
