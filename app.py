@@ -1,91 +1,154 @@
 import streamlit as st
 import joblib
 import numpy as np
-import os
-import gdown  # Thư viện tải file từ Drive
+import cv2
 from PIL import Image, ImageOps
-from skimage.feature import hog
+import os
+class HOGDescriptor:
+    def __init__(self, img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9):
+        self.img_size = img_size
+        self.cell_size = cell_size
+        self.block_size = block_size
+        self.bins = bins
 
-# --- 1. CẤU HÌNH (BẮT BUỘC KHỚP VỚI LÚC TRAIN) ---
-IMAGE_SIZE = (64, 64)
-HOG_ORIENTATIONS = 9
-HOG_PIXELS_PER_CELL = (8, 8)
-HOG_CELLS_PER_BLOCK = (2, 2)
-HOG_BLOCK_NORM = 'L2'
+    def process_image(self, img):
+        if len(img.shape) == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img = cv2.resize(img, self.img_size)
+        img = img.astype(np.float32) / 255.0
+        return img
 
-# --- 2. CẤU HÌNH GOOGLE DRIVE ID ---
-# Dán ID file model >100MB của bạn vào đây
-MODEL_FILE_ID = '1JqghqUlS4e1PEsmndY-0RkTuCfjEUZTA'  # <--- THAY ID CỦA BẠN VÀO ĐÂY
-MODEL_FILENAME = 'random_forest_model.pkl'
+    def compute_gradients(self, img):
+        kernel_x = np.array([-1, 0, 1])
+        kernel_y = np.array([-1, 0, 1]).T
+        gx = cv2.filter2D(img, -1, kernel_x)
+        gy = cv2.filter2D(img, -1, kernel_y)
+        magnitude = np.sqrt(gx**2 + gy**2)
+        angle = np.arctan2(gy, gx) * (180 / np.pi)
+        angle = angle % 180
+        return magnitude, angle
 
-# --- 3. HÀM TẢI VÀ LOAD MODEL ---
+    def compute_histograms(self, magnitude, angle):
+        h, w = magnitude.shape
+        cell_h, cell_w = self.cell_size
+        n_cell_y = h // cell_h
+        n_cell_x = w // cell_w
+        histograms = np.zeros((n_cell_y, n_cell_x, self.bins))
+
+        bin_width = 180 / self.bins
+
+        for i in range(n_cell_y):
+            for j in range(n_cell_x):
+                cell_mag = magnitude[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+                cell_ang = angle[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+
+                for y in range(cell_h):
+                    for x in range(cell_w):
+                        mag = cell_mag[y, x]
+                        ang = cell_ang[y, x]
+
+                        bin_idx = int(ang // bin_width) % self.bins
+                        next_bin_idx = (bin_idx + 1) % self.bins
+                        
+                        weight = (ang % bin_width) / bin_width
+                        histograms[i, j, bin_idx] += mag * (1 - weight)
+                        histograms[i, j, next_bin_idx] += mag * weight
+        return histograms
+
+    def compute_block_normalization(self, histograms):
+        n_cell_y, n_cell_x, _ = histograms.shape
+        block_h, block_w = self.block_size
+        n_block_y = n_cell_y - block_h + 1
+        n_block_x = n_cell_x - block_w + 1
+        
+        normalized_blocks = []
+
+        for i in range(n_block_y):
+            for j in range(n_block_x):
+                block = histograms[i:i+block_h, j:j+block_w].flatten()
+                norm = np.sqrt(np.sum(block**2) + 1e-5)
+                normalized_blocks.append(block / norm)
+        
+        return np.concatenate(normalized_blocks)
+    def extract_features(self, img_array):
+        processed_img = self.process_image(img_array)
+        mag, ang = self.compute_gradients(processed_img)
+        hist = self.compute_histograms(mag, ang)
+        features = self.compute_block_normalization(hist)
+        return features
+
+MODEL_PATH = 'random_forest_model.pkl' 
+SELECTOR_PATH = 'selector.pkl'         
+
 @st.cache_resource
 def load_resources():
-    # A. Tải file Model nặng từ Drive về (nếu chưa có)
-    if not os.path.exists(MODEL_FILENAME):
-        url = f'https://drive.google.com/uc?id={MODEL_FILE_ID}'
-        try:
-            st.info("Đang tải model > 100MB từ Google Drive... Vui lòng chờ 1-2 phút...")
-            gdown.download(url, MODEL_FILENAME, quiet=False)
-            st.success("Tải model thành công!")
-        except Exception as e:
-            st.error(f"Lỗi tải model: {e}")
-            return None, None, None
-
-    # B. Load các file (Model nặng + Scaler nhẹ + Class names nhẹ)
     try:
-        # Load Model vừa tải
-        model = joblib.load(MODEL_FILENAME)
-        
-        # Load Scaler và Class name (Những file này nhẹ, up thẳng lên GitHub nên load bình thường)
-        scaler = joblib.load('scaler.pkl')
-        class_names = joblib.load('class_names.pkl')
-        
-        return model, scaler, class_names
-        
-    except Exception as e:
-        st.error(f"Lỗi đọc file: {e}")
-        return None, None, None
+        model = joblib.load(MODEL_PATH)
 
-# --- 4. HÀM XỬ LÝ ẢNH (GIỮ NGUYÊN) ---
-def process_image(image_input, scaler):
-    image = ImageOps.fit(image_input, IMAGE_SIZE, Image.Resampling.LANCZOS)
-    img_gray = image.convert("L")
-    img_array = np.array(img_gray)
-    
-    hog_features = hog(img_array,
-                       orientations=HOG_ORIENTATIONS,
-                       pixels_per_cell=HOG_PIXELS_PER_CELL,
-                       cells_per_block=HOG_CELLS_PER_BLOCK,
-                       block_norm=HOG_BLOCK_NORM,
-                       visualize=False,
-                       feature_vector=True)
-    
-    features_reshaped = hog_features.reshape(1, -1)
-    features_scaled = scaler.transform(features_reshaped)
-    
-    return features_scaled
-
-# --- 5. GIAO DIỆN ---
-st.title("Phân loại ảnh (Model > 100MB)")
-
-model, scaler, class_names = load_resources()
-
-if model and scaler:
-    uploaded_file = st.file_uploader("Chọn ảnh...", type=["jpg", "png", "jpeg"])
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, width=250)
-        
-        if st.button('Dự đoán'):
-            final_data = process_image(image, scaler)
-            pred_idx = model.predict(final_data)[0]
+        if os.path.exists(SELECTOR_PATH):
+            selector = joblib.load(SELECTOR_PATH)
+        else:
+            selector = None
+            st.warning("Không tìm thấy file selector.pkl")
             
-            # Xử lý hiển thị tên lớp
-            try:
-                result_name = class_names[pred_idx]
-            except:
-                result_name = str(pred_idx)
-                
+        return model, selector
+    except Exception as e:
+        st.error(f"Lỗi khi load model: {e}")
+        return None, None
 
-            st.header(f"Kết quả: {result_name}")
+
+def process_image_input(image_pil, selector):
+
+    img_array = np.array(image_pil)
+    
+    if img_array.shape[-1] == 4:
+        img_array = img_array[..., :3]
+        
+    hog_desc = HOGDescriptor(img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9)
+    features = hog_desc.extract_features(img_array)
+    features = features.reshape(1, -1)
+    if selector:
+        features = selector.transform(features)
+        
+    return features
+
+# --- 5. GIAO DIỆN STREAMLIT ---
+st.title("Phân loại Cảm xúc ")
+st.write("Sử dụng HOG và các thuật toán học máy để phân loại cảm xúc từ ảnh.")
+
+model, selector = load_resources()
+
+if model:
+    uploaded_file = st.file_uploader("Chọn ảnh...", type=["jpg", "png", "jpeg"])
+    
+    if uploaded_file is not None:
+        # Hiển thị ảnh
+        image = Image.open(uploaded_file)
+        st.image(image, width=200, caption="Ảnh đã tải lên")
+        
+        if st.button("Dự đoán"):
+            with st.spinner('Đang xử lý...'):
+                # Xử lý ảnh
+                try:
+                    features = process_image_input(image, selector)
+                    
+                    # Dự đoán
+                    prediction = model.predict(features)[0]
+                    
+                    # Mapping nhãn (Bạn sửa lại theo đúng nhãn của mình)
+                    emotion_labels = {
+                        0: "Angry", 
+                        1: "Fear", 
+                        2: "Happy", 
+                        3: "Sad", 
+                        4: "Surprise"
+                    }
+                    result_text = emotion_labels.get(prediction, f"Lớp {prediction}")
+                    
+                    st.success(f"Kết quả: **{result_text}**")
+                    
+                except ValueError as ve:
+                    st.error(f"Lỗi kích thước dữ liệu: {ve}")
+                    st.info("Gợi ý: Có thể bạn chưa load file `selector.pkl` (VarianceThreshold) nên vector đầu vào (1764) không khớp với model (392).")
+                except Exception as e:
+                    st.error(f"Lỗi không xác định: {e}")
