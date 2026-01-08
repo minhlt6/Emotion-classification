@@ -5,7 +5,6 @@ import cv2
 from PIL import Image
 import os
 import gdown
-from collections import Counter
 
 class HOGDescriptor:
     def __init__(self, img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9):
@@ -94,19 +93,11 @@ MODEL_CONFIGS = {
 }
 
 SELECTOR_FILENAME = 'selector.pkl'
-EMOTION_LABELS = {
-    0: "Angry", 
-    1: "Fear", 
-    2: "Happy", 
-    3: "Sad", 
-    4: "Surprise"
-}
 
 @st.cache_resource
 def load_all_models():
     loaded_models = {}
     selector = None
-    
     if os.path.exists(SELECTOR_FILENAME):
         selector = joblib.load(SELECTOR_FILENAME)
     
@@ -130,27 +121,22 @@ def load_all_models():
 
     return loaded_models, selector
 
-def process_hog_features(img_array, selector):
+def process_image_input(image_pil, selector):
+    img_array = np.array(image_pil)
+    if img_array.shape[-1] == 4:
+        img_array = img_array[..., :3]
+        
     hog_desc = HOGDescriptor(img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9)
     features = hog_desc.extract_features(img_array)
     features = features.reshape(1, -1)
+    
     if selector:
         features = selector.transform(features)
     return features
 
-def detect_and_crop_faces(image_pil):
-    img_cv = np.array(image_pil)
-    if img_cv.shape[-1] == 4:
-        img_cv = img_cv[..., :3]
-    
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-    
-    return img_cv, faces
-
-st.set_page_config(layout="wide", page_title="HOG Emotion Recognition")
-st.title("Nhận diện Cảm xúc (HOG + 4 Models)")
+st.set_page_config(layout="wide")
+st.title("So sánh 4 thuật toán: ID3 - CART - RF - KNN")
+st.markdown("Demo nhận diện cảm xúc sử dụng đặc trưng HOG.")
 
 models, selector = load_all_models()
 
@@ -159,63 +145,39 @@ if not models:
 else:
     st.success(f"Đã load: {', '.join(models.keys())}")
 
-col1, col2 = st.columns([1, 1.5])
+col1, col2 = st.columns([1, 2])
 
 with col1:
-    uploaded_file = st.file_uploader("Upload ảnh...", type=["jpg", "png", "jpeg"])
-    
+    uploaded_file = st.file_uploader("Chọn ảnh cần dự đoán...", type=["jpg", "png", "jpeg"])
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
-        img_cv_original, faces_rects = detect_and_crop_faces(image)
-        
-        img_visual = img_cv_original.copy()
-        for i, (x, y, w, h) in enumerate(faces_rects):
-            cv2.rectangle(img_visual, (x, y), (x+w, y+h), (0, 255, 0), 3)
-            cv2.putText(img_visual, f"Face {i+1}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-            
-        st.image(img_visual, caption=f"Tìm thấy {len(faces_rects)} khuôn mặt", use_column_width=True)
+        st.image(image, width=250, caption="Ảnh đầu vào")
 
 with col2:
-    if uploaded_file is not None:
-        if len(faces_rects) > 0:
-            if st.button("Phân tích các khuôn mặt", type="primary"):
-                st.divider()
-                for i, (x, y, w, h) in enumerate(faces_rects):
-                    st.subheader(f"Khuôn mặt #{i+1}")
+    if uploaded_file is not None and models:
+        if st.button("Dự đoán", type="primary"):
+            with st.spinner('Đang xử lý...'):
+                try:
+                    features = process_image_input(image, selector)
                     
-                    face_crop = img_cv_original[y:y+h, x:x+w]
+                    emotion_labels = {
+                        0: "Angry", 
+                        1: "Fear", 
+                        2: "Happy", 
+                        3: "Sad", 
+                        4: "Surprise"
+                    }
+
+                    st.subheader("Kết quả dự đoán:")
+                    res_cols = st.columns(4)
                     
-                    c1, c2 = st.columns([1, 3])
-                    with c1:
-                        st.image(face_crop, width=100)
-                    
-                    with c2:
-                        try:
-                            features = process_hog_features(face_crop, selector)
-                            predictions = []
-                            result_data = []
+                    for i, (model_name, model) in enumerate(models.items()):
+                        pred_idx = model.predict(features)[0]
+                        pred_text = emotion_labels.get(pred_idx, f"Lớp {pred_idx}")
+                        
+                        with res_cols[i % 4]: 
+                            st.info(f"**{model_name}**")
+                            st.metric(label="Cảm xúc", value=pred_text)
                             
-                            for model_name, model in models.items():
-                                pred = model.predict(features)[0]
-                                label = EMOTION_LABELS.get(pred, str(pred))
-                                predictions.append(label)
-                                result_data.append({"Model": model_name, "Dự đoán": label})
-                            
-                            most_common = Counter(predictions).most_common(1)[0][0]
-                            
-                            st.dataframe(result_data, hide_index=True)
-                            st.success(f"Kết quả chung: **{most_common}**")
-                            
-                        except Exception as e:
-                            st.error(f"Lỗi: {e}")
-                    st.divider()
-        else:
-            st.warning("Không tìm thấy khuôn mặt. Đang thử dự đoán toàn bộ ảnh...")
-            if st.button("Dự đoán toàn bộ ảnh"):
-                features = process_hog_features(img_cv_original, selector)
-                result_data = []
-                for model_name, model in models.items():
-                    pred = model.predict(features)[0]
-                    label = EMOTION_LABELS.get(pred, str(pred))
-                    result_data.append({"Model": model_name, "Dự đoán": label})
-                st.dataframe(result_data, hide_index=True)
+                except Exception as e:
+                    st.error(f"Đã xảy ra lỗi: {e}")
