@@ -78,19 +78,19 @@ class HOGDescriptor:
 # BẠN CẦN ĐIỀN ID DRIVE CỦA CÁC FILE VÀO ĐÂY
 MODEL_CONFIGS = {
     "Random Forest": {
-        "id": "1JqghqUlS4e1PEsmndY-0RkTuCfjEUZTA", # ID cũ của bạn
+        "id": "1PrrF8vO0xIBbcj8hkYHYQOoGHrr-bkqw", # ID cũ của bạn
         "file": "rf_model.pkl"
     },
-    "ID3 (Decision Tree Entropy)": {
-        "id": "HÃY_ĐIỀN_ID_CỦA_ID3_VÀO_ĐÂY", 
+    "ID3 ": {
+        "id": "1_JTMBw1rBzvNs8SKW_s-eaF0kAhhZWhz", 
         "file": "id3_model.pkl"
     },
-    "CART (Decision Tree Gini)": {
-        "id": "HÃY_ĐIỀN_ID_CỦA_CART_VÀO_ĐÂY", 
+    "CART ": {
+        "id": "1LeDg_XCMYGsr_WkM6fby7lcf0_W7Gk7c", 
         "file": "cart_model.pkl"
     },
     "KNN": {
-        "id": "HÃY_ĐIỀN_ID_CỦA_KNN_VÀO_ĐÂY", 
+        "id": "1HzvDgRDlhkt7LvhvqPtwT5g-AVwhmDfA", 
         "file": "knn_model.pkl"
     }
 }
