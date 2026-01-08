@@ -1,8 +1,7 @@
-opencv-python-headless
+streamlit
 numpy
+opencv-python-headless
+Pillow
 joblib
 scikit-learn
-pillow
-streamlit
 gdown
-collections
