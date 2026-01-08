@@ -2,8 +2,11 @@ import streamlit as st
 import joblib
 import numpy as np
 import cv2
-from PIL import Image, ImageOps
+from PIL import Image
 import os
+import gdown
+
+# --- 1. CLASS HOG DESCRIPTOR (GIỮ NGUYÊN ĐỂ KHỚP THUẬT TOÁN) ---
 class HOGDescriptor:
     def __init__(self, img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9):
         self.img_size = img_size
@@ -34,22 +37,18 @@ class HOGDescriptor:
         n_cell_y = h // cell_h
         n_cell_x = w // cell_w
         histograms = np.zeros((n_cell_y, n_cell_x, self.bins))
-
         bin_width = 180 / self.bins
 
         for i in range(n_cell_y):
             for j in range(n_cell_x):
                 cell_mag = magnitude[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
                 cell_ang = angle[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
-
                 for y in range(cell_h):
                     for x in range(cell_w):
                         mag = cell_mag[y, x]
                         ang = cell_ang[y, x]
-
                         bin_idx = int(ang // bin_width) % self.bins
                         next_bin_idx = (bin_idx + 1) % self.bins
-                        
                         weight = (ang % bin_width) / bin_width
                         histograms[i, j, bin_idx] += mag * (1 - weight)
                         histograms[i, j, next_bin_idx] += mag * weight
@@ -60,16 +59,14 @@ class HOGDescriptor:
         block_h, block_w = self.block_size
         n_block_y = n_cell_y - block_h + 1
         n_block_x = n_cell_x - block_w + 1
-        
         normalized_blocks = []
-
         for i in range(n_block_y):
             for j in range(n_block_x):
                 block = histograms[i:i+block_h, j:j+block_w].flatten()
                 norm = np.sqrt(np.sum(block**2) + 1e-5)
                 normalized_blocks.append(block / norm)
-        
         return np.concatenate(normalized_blocks)
+
     def extract_features(self, img_array):
         processed_img = self.process_image(img_array)
         mag, ang = self.compute_gradients(processed_img)
@@ -77,65 +74,111 @@ class HOGDescriptor:
         features = self.compute_block_normalization(hist)
         return features
 
-MODEL_PATH = 'random_forest_model.pkl' 
-SELECTOR_PATH = 'selector.pkl'         
+# --- 2. CẤU HÌNH CÁC MODEL ---
+# BẠN CẦN ĐIỀN ID DRIVE CỦA CÁC FILE VÀO ĐÂY
+MODEL_CONFIGS = {
+    "Random Forest": {
+        "id": "1JqghqUlS4e1PEsmndY-0RkTuCfjEUZTA", # ID cũ của bạn
+        "file": "rf_model.pkl"
+    },
+    "ID3 (Decision Tree Entropy)": {
+        "id": "HÃY_ĐIỀN_ID_CỦA_ID3_VÀO_ĐÂY", 
+        "file": "id3_model.pkl"
+    },
+    "CART (Decision Tree Gini)": {
+        "id": "HÃY_ĐIỀN_ID_CỦA_CART_VÀO_ĐÂY", 
+        "file": "cart_model.pkl"
+    },
+    "KNN": {
+        "id": "HÃY_ĐIỀN_ID_CỦA_KNN_VÀO_ĐÂY", 
+        "file": "knn_model.pkl"
+    }
+}
 
+SELECTOR_FILENAME = 'selector.pkl'
+
+# --- 3. HÀM TẢI VÀ LOAD TÀI NGUYÊN ---
 @st.cache_resource
-def load_resources():
-    try:
-        model = joblib.load(MODEL_PATH)
-
-        if os.path.exists(SELECTOR_PATH):
-            selector = joblib.load(SELECTOR_PATH)
-        else:
-            selector = None
-            st.warning("Không tìm thấy file selector.pkl")
-            
-        return model, selector
-    except Exception as e:
-        st.error(f"Lỗi khi load model: {e}")
-        return None, None
-
-
-def process_image_input(image_pil, selector):
-
-    img_array = np.array(image_pil)
+def load_all_models():
+    loaded_models = {}
     
+    # 1. Load Selector (Dùng chung cho cả 4 model nếu train cùng dữ liệu)
+    selector = None
+    if os.path.exists(SELECTOR_FILENAME):
+        selector = joblib.load(SELECTOR_FILENAME)
+    
+    # 2. Loop qua danh sách config để tải và load từng model
+    for name, config in MODEL_CONFIGS.items():
+        file_path = config["file"]
+        drive_id = config["id"]
+        
+        # Tải file nếu chưa có
+        if not os.path.exists(file_path):
+            if "HÃY_ĐIỀN" in drive_id: # Bỏ qua nếu chưa điền ID
+                continue
+            
+            url = f'https://drive.google.com/uc?id={drive_id}'
+            try:
+                gdown.download(url, file_path, quiet=False)
+            except:
+                st.warning(f"Không tải được model {name}. Kiểm tra lại ID.")
+                continue
+
+        # Load model vào dictionary
+        try:
+            if os.path.exists(file_path):
+                loaded_models[name] = joblib.load(file_path)
+        except Exception as e:
+            st.error(f"Lỗi khi load {name}: {e}")
+
+    return loaded_models, selector
+
+# --- 4. HÀM XỬ LÝ ẢNH ---
+def process_image_input(image_pil, selector):
+    img_array = np.array(image_pil)
     if img_array.shape[-1] == 4:
         img_array = img_array[..., :3]
         
     hog_desc = HOGDescriptor(img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9)
     features = hog_desc.extract_features(img_array)
     features = features.reshape(1, -1)
+    
     if selector:
         features = selector.transform(features)
-        
     return features
 
-# --- 5. GIAO DIỆN STREAMLIT ---
-st.title("Phân loại Cảm xúc ")
-st.write("Sử dụng HOG và các thuật toán học máy để phân loại cảm xúc từ ảnh.")
+# --- 5. GIAO DIỆN CHÍNH ---
+st.set_page_config(layout="wide") # Mở rộng giao diện cho dễ nhìn
+st.title("So sánh 4 thuật toán: ID3 - CART - RF - KNN")
+st.markdown("Demo nhận diện cảm xúc sử dụng đặc trưng HOG.")
 
-model, selector = load_resources()
+# Load models
+models, selector = load_all_models()
 
-if model:
-    uploaded_file = st.file_uploader("Chọn ảnh...", type=["jpg", "png", "jpeg"])
-    
+# Hiển thị trạng thái load model
+if not models:
+    st.error("Chưa load được model nào. Vui lòng kiểm tra lại ID Google Drive trong code.")
+else:
+    st.success(f"Đã load thành công: {', '.join(models.keys())}")
+
+# Upload ảnh
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    uploaded_file = st.file_uploader("Chọn ảnh cần dự đoán...", type=["jpg", "png", "jpeg"])
     if uploaded_file is not None:
-        # Hiển thị ảnh
         image = Image.open(uploaded_file)
-        st.image(image, width=200, caption="Ảnh đã tải lên")
-        
-        if st.button("Dự đoán"):
-            with st.spinner('Đang xử lý...'):
-                # Xử lý ảnh
+        st.image(image, width=250, caption="Ảnh đầu vào")
+
+with col2:
+    if uploaded_file is not None and models:
+        if st.button("Dự đoán  ", type="primary"):
+            with st.spinner('Đang trích xuất đặc trưng và dự đoán...'):
                 try:
+                    # 1. Xử lý ảnh (Chỉ làm 1 lần)
                     features = process_image_input(image, selector)
                     
-                    # Dự đoán
-                    prediction = model.predict(features)[0]
-                    
-                    # Mapping nhãn (Bạn sửa lại theo đúng nhãn của mình)
+                    # 2. Định nghĩa nhãn (Sửa lại nếu nhãn của bạn khác)
                     emotion_labels = {
                         0: "Angry", 
                         1: "Fear", 
@@ -143,12 +186,24 @@ if model:
                         3: "Sad", 
                         4: "Surprise"
                     }
-                    result_text = emotion_labels.get(prediction, f"Lớp {prediction}")
+
+                    # 3. Hiển thị kết quả dạng lưới (Grid)
+                    st.subheader("Kết quả dự đoán:")
                     
-                    st.success(f"Kết quả: **{result_text}**")
+                    # Tạo 4 cột để hiển thị kết quả
+                    res_cols = st.columns(4)
                     
-                except ValueError as ve:
-                    st.error(f"Lỗi kích thước dữ liệu: {ve}")
-                    st.info("Gợi ý: Có thể bạn chưa load file `selector.pkl` (VarianceThreshold) nên vector đầu vào (1764) không khớp với model (392).")
+                    # Duyệt qua từng model và hiển thị vào từng cột
+                    for i, (model_name, model) in enumerate(models.items()):
+                        # Dự đoán
+                        pred_idx = model.predict(features)[0]
+                        pred_text = emotion_labels.get(pred_idx, f"Lớp {pred_idx}")
+                        
+                        # Hiển thị lên giao diện
+                        # Dùng % 4 để xoay vòng cột nếu có nhiều hơn 4 model
+                        with res_cols[i % 4]: 
+                            st.info(f"**{model_name}**")
+                            st.metric(label="Cảm xúc", value=pred_text)
+                            
                 except Exception as e:
-                    st.error(f"Lỗi không xác định: {e}")
+                    st.error(f"Đã xảy ra lỗi: {e}")
