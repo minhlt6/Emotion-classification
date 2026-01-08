@@ -1,7 +1,6 @@
-streamlit
-scikit-learn
-scikit-image
-joblib
+opencv-python-headless
 numpy
+joblib
+scikit-learn
 pillow
-gdown
+streamlit
