@@ -5,8 +5,8 @@ import cv2
 from PIL import Image
 import os
 import gdown
+from collections import Counter
 
-# --- 1. CLASS HOG DESCRIPTOR (GIỮ NGUYÊN ĐỂ KHỚP THUẬT TOÁN) ---
 class HOGDescriptor:
     def __init__(self, img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9):
         self.img_size = img_size
@@ -74,18 +74,16 @@ class HOGDescriptor:
         features = self.compute_block_normalization(hist)
         return features
 
-# --- 2. CẤU HÌNH CÁC MODEL ---
-# BẠN CẦN ĐIỀN ID DRIVE CỦA CÁC FILE VÀO ĐÂY
 MODEL_CONFIGS = {
     "Random Forest": {
-        "id": "1PrrF8vO0xIBbcj8hkYHYQOoGHrr-bkqw", # ID cũ của bạn
+        "id": "1PrrF8vO0xIBbcj8hkYHYQOoGHrr-bkqw", 
         "file": "rf_model.pkl"
     },
-    "ID3 ": {
+    "ID3": {
         "id": "1_JTMBw1rBzvNs8SKW_s-eaF0kAhhZWhz", 
         "file": "id3_model.pkl"
     },
-    "CART ": {
+    "CART": {
         "id": "1LeDg_XCMYGsr_WkM6fby7lcf0_W7Gk7c", 
         "file": "cart_model.pkl"
     },
@@ -96,114 +94,128 @@ MODEL_CONFIGS = {
 }
 
 SELECTOR_FILENAME = 'selector.pkl'
+EMOTION_LABELS = {
+    0: "Angry", 
+    1: "Fear", 
+    2: "Happy", 
+    3: "Sad", 
+    4: "Surprise"
+}
 
-# --- 3. HÀM TẢI VÀ LOAD TÀI NGUYÊN ---
 @st.cache_resource
 def load_all_models():
     loaded_models = {}
-    
-    # 1. Load Selector (Dùng chung cho cả 4 model nếu train cùng dữ liệu)
     selector = None
+    
     if os.path.exists(SELECTOR_FILENAME):
         selector = joblib.load(SELECTOR_FILENAME)
     
-    # 2. Loop qua danh sách config để tải và load từng model
     for name, config in MODEL_CONFIGS.items():
         file_path = config["file"]
         drive_id = config["id"]
         
-        # Tải file nếu chưa có
         if not os.path.exists(file_path):
-            if "HÃY_ĐIỀN" in drive_id: # Bỏ qua nếu chưa điền ID
-                continue
-            
             url = f'https://drive.google.com/uc?id={drive_id}'
             try:
                 gdown.download(url, file_path, quiet=False)
             except:
-                st.warning(f"Không tải được model {name}. Kiểm tra lại ID.")
+                st.warning(f"Lỗi tải {name}")
                 continue
 
-        # Load model vào dictionary
         try:
             if os.path.exists(file_path):
                 loaded_models[name] = joblib.load(file_path)
         except Exception as e:
-            st.error(f"Lỗi khi load {name}: {e}")
+            st.error(f"Lỗi load {name}: {e}")
 
     return loaded_models, selector
 
-# --- 4. HÀM XỬ LÝ ẢNH ---
-def process_image_input(image_pil, selector):
-    img_array = np.array(image_pil)
-    if img_array.shape[-1] == 4:
-        img_array = img_array[..., :3]
-        
+def process_hog_features(img_array, selector):
     hog_desc = HOGDescriptor(img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9)
     features = hog_desc.extract_features(img_array)
     features = features.reshape(1, -1)
-    
     if selector:
         features = selector.transform(features)
     return features
 
-# --- 5. GIAO DIỆN CHÍNH ---
-st.set_page_config(layout="wide") # Mở rộng giao diện cho dễ nhìn
-st.title("So sánh 4 thuật toán: ID3 - CART - RF - KNN")
-st.markdown("Demo nhận diện cảm xúc sử dụng đặc trưng HOG.")
+def detect_and_crop_faces(image_pil):
+    img_cv = np.array(image_pil)
+    if img_cv.shape[-1] == 4:
+        img_cv = img_cv[..., :3]
+    
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    
+    return img_cv, faces
 
-# Load models
+st.set_page_config(layout="wide", page_title="HOG Emotion Recognition")
+st.title("Nhận diện Cảm xúc (HOG + 4 Models)")
+
 models, selector = load_all_models()
 
-# Hiển thị trạng thái load model
 if not models:
-    st.error("Chưa load được model nào. Vui lòng kiểm tra lại ID Google Drive trong code.")
+    st.error("Chưa load được model nào.")
 else:
-    st.success(f"Đã load thành công: {', '.join(models.keys())}")
+    st.success(f"Đã load: {', '.join(models.keys())}")
 
-# Upload ảnh
-col1, col2 = st.columns([1, 2])
+col1, col2 = st.columns([1, 1.5])
 
 with col1:
-    uploaded_file = st.file_uploader("Chọn ảnh cần dự đoán...", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Upload ảnh...", type=["jpg", "png", "jpeg"])
+    
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
-        st.image(image, width=250, caption="Ảnh đầu vào")
+        img_cv_original, faces_rects = detect_and_crop_faces(image)
+        
+        img_visual = img_cv_original.copy()
+        for i, (x, y, w, h) in enumerate(faces_rects):
+            cv2.rectangle(img_visual, (x, y), (x+w, y+h), (0, 255, 0), 3)
+            cv2.putText(img_visual, f"Face {i+1}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            
+        st.image(img_visual, caption=f"Tìm thấy {len(faces_rects)} khuôn mặt", use_column_width=True)
 
 with col2:
-    if uploaded_file is not None and models:
-        if st.button("Dự đoán  ", type="primary"):
-            with st.spinner('Đang trích xuất đặc trưng và dự đoán...'):
-                try:
-                    # 1. Xử lý ảnh (Chỉ làm 1 lần)
-                    features = process_image_input(image, selector)
+    if uploaded_file is not None:
+        if len(faces_rects) > 0:
+            if st.button("Phân tích các khuôn mặt", type="primary"):
+                st.divider()
+                for i, (x, y, w, h) in enumerate(faces_rects):
+                    st.subheader(f"Khuôn mặt #{i+1}")
                     
-                    # 2. Định nghĩa nhãn (Sửa lại nếu nhãn của bạn khác)
-                    emotion_labels = {
-                        0: "Angry", 
-                        1: "Fear", 
-                        2: "Happy", 
-                        3: "Sad", 
-                        4: "Surprise"
-                    }
-
-                    # 3. Hiển thị kết quả dạng lưới (Grid)
-                    st.subheader("Kết quả dự đoán:")
+                    face_crop = img_cv_original[y:y+h, x:x+w]
                     
-                    # Tạo 4 cột để hiển thị kết quả
-                    res_cols = st.columns(4)
+                    c1, c2 = st.columns([1, 3])
+                    with c1:
+                        st.image(face_crop, width=100)
                     
-                    # Duyệt qua từng model và hiển thị vào từng cột
-                    for i, (model_name, model) in enumerate(models.items()):
-                        # Dự đoán
-                        pred_idx = model.predict(features)[0]
-                        pred_text = emotion_labels.get(pred_idx, f"Lớp {pred_idx}")
-                        
-                        # Hiển thị lên giao diện
-                        # Dùng % 4 để xoay vòng cột nếu có nhiều hơn 4 model
-                        with res_cols[i % 4]: 
-                            st.info(f"**{model_name}**")
-                            st.metric(label="Cảm xúc", value=pred_text)
+                    with c2:
+                        try:
+                            features = process_hog_features(face_crop, selector)
+                            predictions = []
+                            result_data = []
                             
-                except Exception as e:
-                    st.error(f"Đã xảy ra lỗi: {e}")
+                            for model_name, model in models.items():
+                                pred = model.predict(features)[0]
+                                label = EMOTION_LABELS.get(pred, str(pred))
+                                predictions.append(label)
+                                result_data.append({"Model": model_name, "Dự đoán": label})
+                            
+                            most_common = Counter(predictions).most_common(1)[0][0]
+                            
+                            st.dataframe(result_data, hide_index=True)
+                            st.success(f"Kết quả chung: **{most_common}**")
+                            
+                        except Exception as e:
+                            st.error(f"Lỗi: {e}")
+                    st.divider()
+        else:
+            st.warning("Không tìm thấy khuôn mặt. Đang thử dự đoán toàn bộ ảnh...")
+            if st.button("Dự đoán toàn bộ ảnh"):
+                features = process_hog_features(img_cv_original, selector)
+                result_data = []
+                for model_name, model in models.items():
+                    pred = model.predict(features)[0]
+                    label = EMOTION_LABELS.get(pred, str(pred))
+                    result_data.append({"Model": model_name, "Dự đoán": label})
+                st.dataframe(result_data, hide_index=True)
