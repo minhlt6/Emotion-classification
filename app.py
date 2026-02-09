@@ -7,19 +7,9 @@ import os
 import gdown
 
 # --- Cấu hình trang ---
-st.set_page_config(layout="wide", page_title="Nhận diện cảm xúc HOG - Final")
+st.set_page_config(layout="wide", page_title="Nhận diện cảm xúc HOG ")
 
-# ==========================================
-# 1. CẤU HÌNH & LOAD MODEL
-# ==========================================
-
-# Tên file selector (BẮT BUỘC PHẢI CÓ để giảm chiều vector)
 SELECTOR_FILENAME = 'selector.pkl'
-
-# ID Google Drive của file selector.pkl (BẠN HÃY ĐIỀN ID CỦA BẠN VÀO ĐÂY NẾU CÓ)
-# Nếu không, bạn phải upload file selector.pkl lên cùng thư mục với app.py
-SELECTOR_DRIVE_ID = None  # Ví dụ: "1...ID_Cua_Ban..."
-
 MODEL_CONFIGS = {
     "Random Forest": {"id": "1PrrF8vO0xIBbcj8hkYHYQOoGHrr-bkqw", "file": "rf_model.pkl"},
     "ID3": {"id": "1_JTMBw1rBzvNs8SKW_s-eaF0kAhhZWhz", "file": "id3_model.pkl"},
@@ -31,23 +21,7 @@ MODEL_CONFIGS = {
 def load_resources():
     loaded_models = {}
     selector = None
-    
-    # 1. Tải và load Selector (QUAN TRỌNG)
-    if not os.path.exists(SELECTOR_FILENAME) and SELECTOR_DRIVE_ID:
-        url = f'https://drive.google.com/uc?id={SELECTOR_DRIVE_ID}'
-        try:
-            gdown.download(url, SELECTOR_FILENAME, quiet=True)
-        except: pass
-        
-    if os.path.exists(SELECTOR_FILENAME):
-        try:
-            selector = joblib.load(SELECTOR_FILENAME)
-        except Exception as e:
-            st.error(f"Lỗi load selector.pkl: {e}")
-    else:
-        st.warning("⚠️ Không tìm thấy file 'selector.pkl'. Mô hình có thể bị lỗi kích thước (Shape Mismatch)!")
-
-    # 2. Tải và load Models
+    # Tải và load Models
     for name, config in MODEL_CONFIGS.items():
         file_path = config["file"]
         drive_id = config["id"]
@@ -67,8 +41,7 @@ def load_resources():
     return loaded_models, selector
 
 # ==========================================
-# 2. XỬ LÝ ẢNH & HOG (Đã cập nhật chuẩn 64x64)
-# ==========================================
+# 2. XỬ LÝ ẢNH & HOG 
 class HOGDescriptor:
     def __init__(self, img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9):
         self.img_size = img_size
