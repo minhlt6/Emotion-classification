@@ -7,10 +7,67 @@ import os
 import gdown
 
 # --- Cấu hình trang ---
-st.set_page_config(layout="wide", page_title="Nhận diện cảm xúc HOG")
+st.set_page_config(layout="wide", page_title="Nhận diện cảm xúc HOG - Final")
 
 # ==========================================
-# 1. HÀM XỬ LÝ ẢNH & HOG
+# 1. CẤU HÌNH & LOAD MODEL
+# ==========================================
+
+# Tên file selector (BẮT BUỘC PHẢI CÓ để giảm chiều vector)
+SELECTOR_FILENAME = 'selector.pkl'
+
+# ID Google Drive của file selector.pkl (BẠN HÃY ĐIỀN ID CỦA BẠN VÀO ĐÂY NẾU CÓ)
+# Nếu không, bạn phải upload file selector.pkl lên cùng thư mục với app.py
+SELECTOR_DRIVE_ID = None  # Ví dụ: "1...ID_Cua_Ban..."
+
+MODEL_CONFIGS = {
+    "Random Forest": {"id": "1PrrF8vO0xIBbcj8hkYHYQOoGHrr-bkqw", "file": "rf_model.pkl"},
+    "ID3": {"id": "1_JTMBw1rBzvNs8SKW_s-eaF0kAhhZWhz", "file": "id3_model.pkl"},
+    "CART": {"id": "1LeDg_XCMYGsr_WkM6fby7lcf0_W7Gk7c", "file": "cart_model.pkl"},
+    "KNN": {"id": "1HzvDgRDlhkt7LvhvqPtwT5g-AVwhmDfA", "file": "knn_model.pkl"}
+}
+
+@st.cache_resource
+def load_resources():
+    loaded_models = {}
+    selector = None
+    
+    # 1. Tải và load Selector (QUAN TRỌNG)
+    if not os.path.exists(SELECTOR_FILENAME) and SELECTOR_DRIVE_ID:
+        url = f'https://drive.google.com/uc?id={SELECTOR_DRIVE_ID}'
+        try:
+            gdown.download(url, SELECTOR_FILENAME, quiet=True)
+        except: pass
+        
+    if os.path.exists(SELECTOR_FILENAME):
+        try:
+            selector = joblib.load(SELECTOR_FILENAME)
+        except Exception as e:
+            st.error(f"Lỗi load selector.pkl: {e}")
+    else:
+        st.warning("⚠️ Không tìm thấy file 'selector.pkl'. Mô hình có thể bị lỗi kích thước (Shape Mismatch)!")
+
+    # 2. Tải và load Models
+    for name, config in MODEL_CONFIGS.items():
+        file_path = config["file"]
+        drive_id = config["id"]
+        
+        if not os.path.exists(file_path):
+            url = f'https://drive.google.com/uc?id={drive_id}'
+            try:
+                gdown.download(url, file_path, quiet=True)
+            except: pass
+
+        if os.path.exists(file_path):
+            try:
+                loaded_models[name] = joblib.load(file_path)
+            except Exception as e:
+                st.error(f"Lỗi load {name}: {e}")
+                
+    return loaded_models, selector
+
+# ==========================================
+# 2. XỬ LÝ ẢNH & HOG (Đã cập nhật chuẩn 64x64)
 # ==========================================
 class HOGDescriptor:
     def __init__(self, img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9):
@@ -20,10 +77,19 @@ class HOGDescriptor:
         self.bins = bins
 
     def process_image(self, img):
-        # Lưu ý: img ở đây là ảnh đã được cắt mặt
         if len(img.shape) == 3:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # 1. Resize về 64x64 (BẮT BUỘC như lúc train)
         img = cv2.resize(img, self.img_size)
+
+        # 2. Cân bằng sáng (Histogram Equalization) -> Giúp ảnh Webcam rõ nét như ảnh train
+        img = cv2.equalizeHist(img)
+        
+        # 3. Làm mờ nhẹ để khử nhiễu webcam
+        img = cv2.GaussianBlur(img, (3, 3), 0)
+
+        # 4. Chuẩn hóa về 0-1
         img = img.astype(np.float32) / 255.0
         return img
 
@@ -81,101 +147,50 @@ class HOGDescriptor:
         return features
 
 # ==========================================
-# 2. HÀM CẮT MẶT 
+# 3. HÀM CẮT MẶT (TIGHT CROP)
+# ==========================================
 def detect_face(image_array):
-    """
-    Hàm phát hiện và cắt khuôn mặt lớn nhất trong ảnh.
-    Input: Numpy array (RGB)
-    Output: Numpy array (RGB) chứa khuôn mặt đã cắt, hoặc None nếu không tìm thấy.
-    """
-    # Load mô hình nhận diện khuôn mặt có sẵn của OpenCV
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    
-    # Chuyển sang ảnh xám để detect
     gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
-    
-    # Phát hiện khuôn mặt
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
     
     if len(faces) == 0:
-        return None, None # Không tìm thấy mặt
+        return None, None
     
-    # Nếu tìm thấy nhiều mặt, lấy mặt có diện tích lớn nhất 
-    max_area = 0
-    best_face = None
-    coords = None
+    faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
+    x, y, w, h = faces[0]
     
-    for (x, y, w, h) in faces:
-        area = w * h
-        if area > max_area:
-            max_area = area
-            # Cắt ảnh gốc theo tọa độ (lưu ý ảnh gốc là RGB)
-            best_face = image_array[y:y+h, x:x+w]
-            coords = (x, y, w, h)
-            
-    return best_face, coords
-
-# ==========================================
-# 3. QUẢN LÝ MODEL
-# ==========================================
-MODEL_CONFIGS = {
-    "Random Forest": {"id": "1PrrF8vO0xIBbcj8hkYHYQOoGHrr-bkqw", "file": "rf_model.pkl"},
-    "ID3": {"id": "1_JTMBw1rBzvNs8SKW_s-eaF0kAhhZWhz", "file": "id3_model.pkl"},
-    "CART": {"id": "1LeDg_XCMYGsr_WkM6fby7lcf0_W7Gk7c", "file": "cart_model.pkl"},
-    "KNN": {"id": "1HzvDgRDlhkt7LvhvqPtwT5g-AVwhmDfA", "file": "knn_model.pkl"}
-}
-
-SELECTOR_FILENAME = 'selector.pkl'
-
-@st.cache_resource
-def load_all_models():
-    loaded_models = {}
-    selector = None
+    # --- CẮT SÁT (ZOOM IN) ---
+    # Thu hẹp 15% viền để loại bỏ tóc/cổ, chỉ lấy nét mặt chính
+    zoom_ratio = 0.15 
+    offset_x = int(w * zoom_ratio)
+    offset_y = int(h * zoom_ratio)
     
-    if os.path.exists(SELECTOR_FILENAME):
-        try:
-            selector = joblib.load(SELECTOR_FILENAME)
-        except: pass
+    new_x = x + offset_x
+    new_y = y + offset_y
+    new_w = w - (2 * offset_x)
+    new_h = h - (2 * offset_y)
     
-    for name, config in MODEL_CONFIGS.items():
-        file_path = config["file"]
-        drive_id = config["id"]
-        
-        if not os.path.exists(file_path):
-            url = f'https://drive.google.com/uc?id={drive_id}'
-            try:
-                gdown.download(url, file_path, quiet=True)
-            except:
-                st.warning(f"Không thể tải model {name}")
-                continue
-             
-        try:
-            if os.path.exists(file_path):
-                loaded_models[name] = joblib.load(file_path)
-        except Exception as e:
-            st.error(f"Lỗi load {name}: {e}")
-
-    return loaded_models, selector
-
-# Hàm trích xuất đặc trưng từ ảnh đã cắt
-def extract_features_from_face(face_img_array, selector):
-    hog_desc = HOGDescriptor(img_size=(64, 64), cell_size=(8, 8), block_size=(2, 2), bins=9)
-    features = hog_desc.extract_features(face_img_array)
-    features = features.reshape(1, -1)
-    if selector:
-        features = selector.transform(features)
-    return features
+    if new_w > 0 and new_h > 0:
+        best_face = image_array[new_y:new_y+new_h, new_x:new_x+new_w]
+        return best_face, (new_x, new_y, new_w, new_h)
+    else:
+        return image_array[y:y+h, x:x+w], (x, y, w, h)
 
 # ==========================================
 # 4. GIAO DIỆN CHÍNH
 # ==========================================
 st.title("Phân loại cảm xúc: ID3 - CART - RF - KNN")
-st.markdown("Có tích hợp: **Tự động cắt khuôn mặt** trước khi dự đoán.")
+st.markdown("Quy trình: Detect Face -> Crop -> HOG -> **Feature Selection (Giảm chiều)** -> Predict")
 
-models, selector = load_all_models()
+models, selector = load_resources()
+
+if selector:
+    st.success(f"✅ Đã tải Selector: {type(selector).__name__} (Sẵn sàng giảm chiều vector)")
+else:
+    st.error("❌ Chưa tải được file selector.pkl. Vui lòng kiểm tra!")
 
 col1, col2 = st.columns([1, 1.5])
-
 input_image_pil = None
 
 with col1:
@@ -186,38 +201,24 @@ with col1:
         uploaded_file = st.file_uploader("Chọn ảnh...", type=["jpg", "png", "jpeg"])
         if uploaded_file:
             input_image_pil = Image.open(uploaded_file)
-            
     with tab_cam:
         cam_image = st.camera_input("Chụp ảnh")
         if cam_image:
             input_image_pil = Image.open(cam_image)
 
-    # Nếu có ảnh đầu vào
     if input_image_pil:
-        # Hiển thị ảnh gốc
-        st.image(input_image_pil, caption="Ảnh gốc", width=300)
-        
-        # Chuyển sang array
         input_array = np.array(input_image_pil)
         if len(input_array.shape) == 3 and input_array.shape[2] == 4:
-            input_array = input_array[..., :3] # Bỏ kênh alpha
+            input_array = input_array[..., :3]
 
-        # --- GIAI ĐOẠN CẮT MẶT ---
         st.info("Đang tìm khuôn mặt...")
         face_img, coords = detect_face(input_array)
 
         if face_img is not None:
-            # Vẽ hình chữ nhật lên ảnh gốc để minh họa (Optional)
-            x, y, w, h = coords
-            cv2.rectangle(input_array, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            
-            st.success("✅ Đã tìm thấy khuôn mặt!")
             st.image(face_img, caption="Khuôn mặt đã cắt (Input cho Model)", width=150)
-            
-            # Lưu khuôn mặt vào biến session state hoặc biến tạm để dùng ở cột bên kia
             st.session_state['face_to_process'] = face_img
         else:
-            st.warning("⚠️ Không tìm thấy khuôn mặt rõ ràng. Sẽ dùng toàn bộ ảnh.")
+            st.warning("⚠️ Không tìm thấy khuôn mặt rõ ràng. Dùng toàn bộ ảnh.")
             st.session_state['face_to_process'] = input_array
 
 with col2:
@@ -227,27 +228,36 @@ with col2:
         if st.button("Chạy dự đoán", type="primary"):
             face_to_analyze = st.session_state['face_to_process']
             
-            with st.spinner('Đang tính toán...'):
+            with st.spinner('Đang xử lý...'):
                 try:
-                    # 1. Trích xuất đặc trưng từ ảnh MẶT (chứ không phải ảnh gốc)
-                    features = extract_features_from_face(face_to_analyze, selector)
+                    # 1. Trích xuất đặc trưng HOG
+                    hog_desc = HOGDescriptor() # Mặc định 64x64
+                    features = hog_desc.extract_features(face_to_analyze)
+                    features = features.reshape(1, -1)
                     
+                    st.write(f"Số lượng đặc trưng gốc: **{features.shape[1]}**")
+
+                    # 2. GIẢM CHIỀU (FEATURE SELECTION) - QUAN TRỌNG
+                    if selector:
+                        features = selector.transform(features)
+                        st.write(f"Số lượng đặc trưng sau khi giảm: **{features.shape[1]}**")
+                    else:
+                        st.error("Thiếu selector.pkl, không thể giảm chiều đặc trưng -> Có thể gây lỗi!")
+
+                    # 3. Dự đoán
                     emotion_labels = {0: "Giận dữ 😡", 1: "Sợ hãi 😱", 2: "Vui vẻ 😄", 3: "Buồn 😢", 4: "Ngạc nhiên 😲"}
                     
-                    # 2. Hiển thị kết quả
-                    if not models:
-                        st.error("Chưa tải được model.")
-                    else:
-                        st.write("---")
-                        res_cols = st.columns(2)
-                        for i, (name, model) in enumerate(models.items()):
+                    st.write("---")
+                    res_cols = st.columns(2)
+                    for i, (name, model) in enumerate(models.items()):
+                        try:
                             pred = model.predict(features)[0]
                             label = emotion_labels.get(pred, str(pred))
-                            
                             with res_cols[i % 2]:
                                 st.success(f"**{name}**: {label}")
-                                
+                        except Exception as e:
+                             with res_cols[i % 2]:
+                                st.error(f"{name} lỗi: {e}")
+
                 except Exception as e:
-                    st.error(f"Lỗi: {e}")
-    else:
-        st.info("👈 Vui lòng chọn ảnh bên trái trước.")
+                    st.error(f"Lỗi chung: {e}")
