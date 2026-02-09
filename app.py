@@ -81,8 +81,7 @@ class HOGDescriptor:
         return features
 
 # ==========================================
-# 2. HÀM CẮT MẶT (MỚI THÊM)
-# ==========================================
+# 2. HÀM CẮT MẶT 
 def detect_face(image_array):
     """
     Hàm phát hiện và cắt khuôn mặt lớn nhất trong ảnh.
@@ -101,7 +100,7 @@ def detect_face(image_array):
     if len(faces) == 0:
         return None, None # Không tìm thấy mặt
     
-    # Nếu tìm thấy nhiều mặt, lấy mặt có diện tích lớn nhất (giả sử là nhân vật chính)
+    # Nếu tìm thấy nhiều mặt, lấy mặt có diện tích lớn nhất 
     max_area = 0
     best_face = None
     coords = None
@@ -140,10 +139,15 @@ def load_all_models():
     
     for name, config in MODEL_CONFIGS.items():
         file_path = config["file"]
-        # ... (Code tải file giữ nguyên như cũ)
+        drive_id = config["id"]
+        
         if not os.path.exists(file_path):
-             # Giả lập code tải file (để ngắn gọn)
-             pass 
+            url = f'https://drive.google.com/uc?id={drive_id}'
+            try:
+                gdown.download(url, file_path, quiet=True)
+            except:
+                st.warning(f"Không thể tải model {name}")
+                continue
              
         try:
             if os.path.exists(file_path):
